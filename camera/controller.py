@@ -12,17 +12,17 @@ class CameraController:
         self.capturing = False
         self.recording = False
 
-        # ---------- Frame buffer (ZSL) ----------
+        # ---------- Frame buffer ----------
         self.frame_buffer = FrameBuffer(size=10)
 
         # ---------- Preview configuration ----------
-        preview_config = self.picam2.create_preview_configuration(
+        self.preview_config = self.picam2.create_preview_configuration(
             main={"size": (1280, 720)},
             controls={"FrameRate": 60},
             buffer_count=6
         )
 
-        # ---------- Photo capture ----------
+        # ---------- Photo configuration ----------
         self.capture_config = self.picam2.create_still_configuration(
             main={"size": self.picam2.sensor_resolution}
         )
@@ -32,27 +32,20 @@ class CameraController:
             main={"size": (1920, 1080)},
             controls={
                 "FrameRate": 60,
-                "FrameDurationLimits": (16666, 16666)
-            }
+                "NoiseReductionMode": 1,
+            },
+            buffer_count=6
         )
 
-        self.picam2.configure(preview_config)
+        self.picam2.configure(self.preview_config)
 
-        # ---------- Default camera tuning ----------
         self.picam2.set_controls({
-            # Continuous autofocus
             "AfMode": 2,
             "AfSpeed": 1,
-
-            # Reduce motion blur
             "AeExposureMode": 1,
             "AeMeteringMode": 0,
-
-            # Keep preview smooth
-            "FrameDurationLimits": (16666, 16666),
         })
 
-        # Frame arrival callback
         self.picam2.post_callback = self._frame_arrived
 
         self.fps_callback = None
@@ -62,11 +55,13 @@ class CameraController:
     # Frame arrival handling
     # =========================================================
     def _frame_arrived(self, request):
-        frame = request.make_array("main")
-        self.frame_buffer.add_frame(frame)
+        # During recording, avoid Python processing entirely
+        if not self.recording:
+            frame = request.make_array("main")
+            self.frame_buffer.add_frame(frame)
 
-        if self.fps_callback:
-            self.fps_callback(request)
+            if self.fps_callback:
+                self.fps_callback(request)
 
     # =========================================================
     # Camera lifecycle
@@ -96,7 +91,6 @@ class CameraController:
             signal_function=done
         )
 
-    # Zero shutter lag capture
     def capture_from_buffer(self, filename):
         frame = self.frame_buffer.get_latest()
         if frame is None:
@@ -106,7 +100,6 @@ class CameraController:
 
         img = Image.fromarray(frame)
 
-        # Remove alpha channel if present
         if img.mode in ("RGBA", "BGRA"):
             img = img.convert("RGB")
 
@@ -121,31 +114,21 @@ class CameraController:
             return
 
         self.picam2.stop()
-
-        # Switch to video configuration
         self.picam2.configure(self.video_config)
 
-        # iPhone-like video tuning
         self.picam2.set_controls({
             "Contrast": 1.15,
             "Saturation": 1.2,
             "Brightness": 0.05,
             "Sharpness": 1.1,
-
-            # Continuous autofocus
             "AfMode": 2,
             "AfSpeed": 1,
-
-            # Motion blur reduction
             "AeExposureMode": 1,
-            "FrameDurationLimits": (16666, 16666),
         })
 
         self.picam2.start()
 
-        # High quality bitrate for 1080p60
-        self.encoder = H264Encoder(bitrate=20000000)
-
+        self.encoder = H264Encoder(bitrate=28_000_000)
         output = FfmpegOutput(filename)
 
         self.picam2.start_recording(self.encoder, output)
@@ -157,16 +140,9 @@ class CameraController:
 
         self.picam2.stop_recording()
 
-        # Restore preview configuration
         self.picam2.stop()
-
-        preview_config = self.picam2.create_preview_configuration(
-            main={"size": (1280, 720)},
-            controls={"FrameRate": 60},
-            buffer_count=6
-        )
-
-        self.picam2.configure(preview_config)
+        self.picam2.configure(self.preview_config)
         self.picam2.start()
 
         self.recording = False
+
